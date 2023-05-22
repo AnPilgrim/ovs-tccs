@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <stdio.h>  
 #include <time.h>
+#include <pthread.h>
 
 #include "bitmap.h"
 #include "bundles.h"
@@ -69,6 +70,8 @@
 #include "unaligned.h"
 #include "unixctl.h"
 #include "util.h"
+#include <sys/socket.h>
+#include <linux/genetlink.h>
 
 #define BUFFER_SIZE  1024    
 VLOG_DEFINE_THIS_MODULE(ofproto);
@@ -1045,6 +1048,7 @@ static int  l = 60;
 static struct dict d = {0};
 static long rtt = 120;
 //处理队列长度请求消息函数
+//todo
 static enum ofperr
 handle_queue_length_request(struct ofconn *ofconn, const struct ofp_header *oh)
 {
@@ -1055,7 +1059,7 @@ handle_queue_length_request(struct ofconn *ofconn, const struct ofp_header *oh)
     int currentLength;
     struct ofproto *ofproto = ofconn_get_ofproto(ofconn);
     uint64_t datapath_id = ofproto_get_datapath_id(ofproto);
-    VLOG_INFO("%d", d.size);
+    // VLOG_INFO("%d", d.size);
     //初始化一个缓冲区ql_buf
     struct ofpbuf ql_buf = ofpbuf_const_initializer(oh, ntohs(oh->length));
     char *data = ql_buf.data;
@@ -3640,6 +3644,68 @@ query_switch_features(struct ofproto *ofproto,
     ovs_assert(*ofpacts & (UINT64_C(1) << OFPACT_OUTPUT));
 }
 
+struct datapath_to_thread {
+    int id;
+    bool flag;
+    pthread_t thread;
+} ThreadData;
+
+struct dict_thread {
+    struct datapath_to_thread items[40];
+    int size;
+};
+
+static void thread_add(struct dict_thread *dict, int id) {
+    if (dict->size >= 40) {
+        printf("Error: Dictionary is full!\n");
+        return;
+    }
+    struct datapath_to_thread *item = &dict->items[dict->size++];
+    // VLOG_INFO("%s",item->key);
+    item->id = id;
+    item->flag = false;
+}
+
+static struct datapath_to_thread *thread_get(struct dict_thread *dict, int id) {
+    for (int i = 0; i < dict->size; i++) {
+        if (dict->items[i].id == id) {
+            return &dict->items[i];
+        }
+    }
+    return NULL;
+}
+// static int l = 60;
+// static struct dict d = {0};
+static void* thread_function(void* arg) {
+    uint64_t datapath_id = *(uint64_t*)arg;
+    // 根据 id 做相应的处理
+    VLOG_INFO("线程 %lu 执行\n", datapath_id);
+    // int sockfd;
+    // struct sockaddr_in addr;
+
+    // // 创建套接字
+    // sockfd = socket(AF_INET, SOCK_STREAM, NETLINK_GENERIC);
+    // if (sockfd < 0) {
+    //     perror("Failed to create socket");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // // 设置地址信息
+    // addr.sin_family = AF_INET;
+    // addr.sin_addr.s_addr = INADDR_ANY;
+    // addr.sin_port = datapath_id*100;
+
+    // // 绑定套接字到指定的地址和端口
+    // if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    //     perror("Failed to bind socket");
+    //     exit(EXIT_FAILURE);
+    // }
+
+    return NULL;
+}
+static struct dict_thread dt = {0};
+static uint64_t datapath_array[20] = {0};
+//todo
 static enum ofperr
 handle_features_request(struct ofconn *ofconn, const struct ofp_header *oh)
 {
@@ -3648,6 +3714,7 @@ handle_features_request(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofport *port;
     bool arp_match_ip;
     struct ofpbuf *b;
+    int i;
 
     query_switch_features(ofproto, &arp_match_ip, &features.ofpacts);
 
@@ -3662,10 +3729,27 @@ handle_features_request(struct ofconn *ofconn, const struct ofp_header *oh)
     }
     /* FIXME: Fill in proper features.auxiliary_id for auxiliary connections */
     features.auxiliary_id = 0;
+    uint64_t datapath_id = ofproto->datapath_id;
+    for(i = 0; i < 20; i++){
+        if(datapath_array[i] == 0){
+            datapath_array[i] = datapath_id;
+            break;
+        }
+    }
+    // VLOG_INFO("datapath_id:%lu\n", datapath_id);
     b = ofputil_encode_switch_features(&features, ofconn_get_protocol(ofconn),
                                        oh->xid);
     HMAP_FOR_EACH (port, hmap_node, &ofproto->ports) {
         ofputil_put_switch_features_port(&port->pp, b);
+    }
+
+    if(thread_get(&dt,datapath_id) == NULL){
+        thread_add(&dt ,datapath_id);
+        struct datapath_to_thread *item = thread_get(&dt,datapath_id);
+        if(item->flag == false){
+            pthread_create(&item->thread,NULL,thread_function,&datapath_array[i]);
+            item->flag = true;
+        }
     }
 
     ofconn_send_reply(ofconn, b);
@@ -8923,6 +9007,7 @@ handle_single_part_openflow(struct ofconn *ofconn, const struct ofp_header *oh,
 
     case OFPTYPE_QUEUE_LENGTH_REQUEST:
         return handle_queue_length_request(ofconn, oh);
+        // return 0;
     case OFPTYPE_BUF_CN:
         return 0;
     case OFPTYPE_BUF_CR:

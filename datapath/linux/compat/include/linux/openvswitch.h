@@ -149,6 +149,31 @@ struct ovs_vport_stats {
 /* Fixed logical ports. */
 #define OVSP_LOCAL      ((__u32)0)
 
+/*     ACK.    */
+
+#define OVS_ACK_FAMILY     "ovs_ack"
+#define OVS_ACK_VERSION 0x1
+
+enum ovs_ack_cmd {
+    OVS_ACK_CMD_UNSPEC,
+    OVS_ACK_CMD_REPLY,                         //由内核发送响应给用户态，该命令将由用户态进行处理
+    __OVS_ACK_CMD_MAX,
+};
+#define OVS_ACK_CMD_MAX (__OVS_ACK_CMD_MAX - 1)
+
+enum ovs_ack_attr {
+    OVS_ACK_ATTR_UNSPEC = 0,
+    OVS_ACK_ATTR_INIT,                        //flag标识初始化
+
+	OVS_ACK_ATTR_DATAPATH_ID,			//32bits无符号整型
+	OVS_ACK_ATTR_PORT_NUM,				//32bits无符号整型
+	OVS_ACK_ATTR_QUEUE_LENGTH,		//64bits无符号整型
+	OVS_ACK_ATTR_CONGESTION_FLAG,	//8bits无符号整型
+	OVS_ACK_ATTR_PAD,
+    __OVS_ACK_ATTR_MAX,
+};
+#define OVS_ACK_ATTR_MAX (__OVS_ACK_ATTR_MAX - 1)
+
 /* Packet transfer. */
 
 #define OVS_PACKET_FAMILY "ovs_packet"

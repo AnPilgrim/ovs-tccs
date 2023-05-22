@@ -27,6 +27,7 @@ openvswitch_sources = \
 	vport.c \
 	vport-internal_dev.c \
 	vport-netdev.c \
+	queue-length.c \
 	nsh.c \
 	meter.c
 
@@ -47,6 +48,7 @@ openvswitch_headers = \
 	vport.h \
 	vport-internal_dev.h \
 	vport-netdev.h \
+	queue-length.h \
 	meter.h
 
 dist_sources = $(foreach module,$(dist_modules),$($(module)_sources))

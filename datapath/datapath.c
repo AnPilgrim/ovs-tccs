@@ -62,6 +62,7 @@
 #include "gso.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
+#include "queue-length.h"
 
 unsigned int ovs_net_id __read_mostly;
 
@@ -673,6 +674,19 @@ err:
 	return err;
 }
 
+
+static struct genl_family dp_ack_genl_family __ro_after_init = {
+    .id = 0,                                 // 内核自动生成ID，我们后面通过name去查询ID
+    .hdrsize = sizeof(struct ovs_header),
+    .name = OVS_ACK_FAMILY,
+    .version = OVS_ACK_VERSION,
+    .maxattr = OVS_ACK_ATTR_MAX,
+    .netnsok = true,
+    .parallel_ops = true,    
+    .ops = NULL,
+    .module = THIS_MODULE,
+};
+
 static const struct nla_policy packet_policy[OVS_PACKET_ATTR_MAX + 1] = {
 	[OVS_PACKET_ATTR_PACKET] = { .len = ETH_HLEN },
 	[OVS_PACKET_ATTR_KEY] = { .type = NLA_NESTED },
@@ -709,6 +723,84 @@ static struct genl_family dp_packet_genl_family __ro_after_init = {
 	.n_ops = ARRAY_SIZE(dp_packet_genl_ops),
 	.module = THIS_MODULE,
 };
+
+int send_ack_userspace_packet(struct datapath *dp, uint64_t backlog, char name[32], bool flag)
+{
+    struct ovs_header *upcall;
+    struct sk_buff *user_skb = NULL; /* to be queued to userspace */    
+    size_t len;
+    int err, dp_ifindex;
+    unsigned int datapath_id, port, portid;
+    dp_ifindex = get_dpifindex(dp);
+    if (!dp_ifindex){
+        // pr_info("---send_ack_userspace_packet !dp_if---");
+        return -ENODEV;
+    }
+    sscanf(name, "s%u-eth%u", &datapath_id, &port);
+	if(datapath_id != 0){
+		portid = datapath_id *100;
+	}
+    // pr_info("------------send_ack_userspace_packet------start-------");
+    // pr_info("----send_ack_userspace_packet--datapath:%p-%lu--------",dp,backlog);
+    //1.分配空间，构造新的user_skb数据，存放上传的ACK数据
+    len = NLMSG_ALIGN(sizeof(struct ovs_header)) + nla_total_size(sizeof(uint32_t)) + nla_total_size(sizeof(uint32_t)) + 
+            nla_total_size(sizeof(uint64_t)) + nla_total_size(sizeof(bool));
+
+    user_skb = genlmsg_new(len, GFP_ATOMIC);
+    if (!user_skb) {
+        err = -ENOMEM;
+        // pr_info("---send_ack_userspace_packet !user_skb---");
+        goto out;
+    }
+    //2.通过OVS_PACKET_CMD_ACK命令类型进行通信
+    upcall = genlmsg_put(user_skb, 0, 0, &dp_ack_genl_family,
+                 0, OVS_ACK_CMD_REPLY);
+    upcall->dp_ifindex = dp_ifindex;
+    //3.进行ACK数据填充
+    /* Add OVS_PACKET_ATTR_FD */
+    if (nla_put_u32(user_skb, OVS_ACK_ATTR_DATAPATH_ID,
+            datapath_id)) {
+        err = -ENOBUFS;
+        // pr_info("---send_ack_userspace_packet !frontDpid---");
+        goto out;
+    }
+
+    /* Add OVS_PACKET_ATTR_HASH_ID */
+    if(nla_put_u32(user_skb,OVS_ACK_ATTR_PORT_NUM,
+            port)){
+        err = -ENOBUFS;
+        // pr_info("---send_ack_userspace_packet !hashid---");
+        goto out;
+    }
+
+    /* Add OVS_PACKET_ATTR_TYPE_ID */
+    if(nla_put_u64_64bit(user_skb,OVS_ACK_ATTR_QUEUE_LENGTH,
+            backlog, OVS_ACK_ATTR_PAD)){
+        err = -ENOBUFS;
+        // pr_info("---send_ack_userspace_packet !typeid---");
+        goto out;
+    }
+
+    /* Add OVS_PACKET_ATTR_ACK */
+    if (nla_put_u8(user_skb, OVS_ACK_ATTR_CONGESTION_FLAG,
+            flag)) {
+        err = -ENOBUFS;
+        // pr_info("---send_ack_userspace_packet !packetid---");
+        goto out;
+    }
+
+    //4.更新数据信息，单播上传至用户空间
+    ((struct nlmsghdr *) user_skb->data)->nlmsg_len = user_skb->len;
+    if(ovs_dp_get_net(dp) == NULL){
+        // pr_info("-----send_ack_userspace_packet ovs_dp_get_net(dp) err-----------");
+    }
+    err = genlmsg_unicast(ovs_dp_get_net(dp), user_skb, portid);
+    user_skb = NULL;
+out:
+    // kfree_skb(user_skb);
+    // pr_info("------------send_ack_userspace_packet------end-------");
+    return err;    
+}
 
 static void get_dp_stats(const struct datapath *dp, struct ovs_dp_stats *stats,
 			 struct ovs_dp_megaflow_stats *mega_stats)
@@ -2588,6 +2680,7 @@ static int __init dp_init(void)
 	err = dp_register_genl();
 	if (err < 0)
 		goto error_unreg_netdev;
+	init_queue_length();
 
 	return 0;
 
@@ -2614,6 +2707,7 @@ error:
 
 static void dp_cleanup(void)
 {
+	cleanup_queue_length();
 	dp_unregister_genl(ARRAY_SIZE(dp_genl_families));
 	ovs_netdev_exit();
 	unregister_netdevice_notifier(&ovs_dp_device_notifier);
@@ -2637,5 +2731,6 @@ MODULE_ALIAS_GENL_FAMILY(OVS_DATAPATH_FAMILY);
 MODULE_ALIAS_GENL_FAMILY(OVS_VPORT_FAMILY);
 MODULE_ALIAS_GENL_FAMILY(OVS_FLOW_FAMILY);
 MODULE_ALIAS_GENL_FAMILY(OVS_PACKET_FAMILY);
+MODULE_ALIAS_GENL_FAMILY(OVS_ACK_FAMILY);
 MODULE_ALIAS_GENL_FAMILY(OVS_METER_FAMILY);
 MODULE_ALIAS_GENL_FAMILY(OVS_CT_LIMIT_FAMILY);
